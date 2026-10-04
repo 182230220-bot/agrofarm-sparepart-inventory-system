@@ -3090,6 +3090,8 @@
 </template>
 
 <script lang="ts">
+    import * as fmt from './lib/format';
+    import { getSupabaseClient as getSbClient } from './lib/supabase';
     // ================= SUPABASE CONFIG =================
     // Diambil dari file .env (lihat .env.example).
     // JANGAN masukkan service_role/secret key ke browser.
@@ -5417,30 +5419,10 @@
                 }
             },
             getSupabaseClient() {
-                if (!window.supabase) return null;
-                const url = window.SUPABASE_URL || '';
-                const key = window.SUPABASE_PUBLISHABLE_KEY || '';
-                if (!url || !key || url.includes('YOUR_PROJECT')) return null;
-                if (!window.__inventorySupabaseClient) {
-                    window.__inventorySupabaseClient = window.supabase.createClient(url, key, {
-                        auth: {
-                            // Session tetap bertahan saat halaman di-refresh.
-                            // Masa aktif aplikasi dikendalikan oleh last_seen + batas sesi 24 jam.
-                            persistSession: true,
-                            autoRefreshToken: true,
-                            detectSessionInUrl: true
-                        }
-                    });
-                }
-                return window.__inventorySupabaseClient;
+                return getSbClient();
             },
             escapeHtml(value) {
-                return String(value ?? '')
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/\"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
+                return fmt.escapeHtml(value);
             },
             getPersistedState() {
                 // Ambil raw object Vue agar serialisasi payload Supabase tidak perlu
@@ -5780,31 +5762,17 @@
             },
             // Helper Fungsi Format Tanggal Tanpa Jam (DD/MM/YYYY)
             getFormattedDateOnly(dateObj = new Date()) {
-                const day = String(dateObj.getDate()).padStart(2, '0');
-                const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-                const year = dateObj.getFullYear();
-                return `${day}/${month}/${year}`;
+                return fmt.getFormattedDateOnly(dateObj);
             },
             // Nilai Date untuk Excel agar kolom tanggal tampil konsisten sebagai DD/MM/YYYY.
             excelDateValue(dateValue) {
-                if (!dateValue) return null;
-                const s = String(dateValue).trim();
-                let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-                if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
-                m = s.match(/^(\d{2})[\/-](\d{2})[\/-](\d{4})/);
-                if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 12, 0, 0);
-                return null;
+                return fmt.excelDateValue(dateValue);
             },
             getISODateOnly(dateObj = new Date()) {
-                const day = String(dateObj.getDate()).padStart(2, '0');
-                const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-                const year = dateObj.getFullYear();
-                return `${year}-${month}-${day}`;
+                return fmt.getISODateOnly(dateObj);
             },
             getDateFromInput(dateStr) {
-                if (!dateStr) return new Date();
-                const [year, month, day] = dateStr.split('-').map(Number);
-                return new Date(year, month - 1, day, 12, 0, 0);
+                return fmt.getDateFromInput(dateStr);
             },
             pickTransactionDate(defaultDate = this.getISODateOnly(), title = 'Pilih Tanggal Transaksi') {
                 this.transactionDatePickerTitle = title;
@@ -6031,8 +5999,7 @@
                 this.dashboardSisaProjectOutPage = 1;
             },
             formatRupiah(value) {
-                const num = Number(value) || 0;
-                return num.toLocaleString('id-ID');
+                return fmt.formatRupiah(value);
             },
             // ================================================================
             // NORMALISASI TIPE DATA INVENTORY - SATU SUMBER, TIPE TEGAS
@@ -6040,78 +6007,28 @@
             // QTY/STOK/JUMLAH SELALU NUMBER. SATUAN SELALU TEXT.
             // ================================================================
             excelSerialFromDate(value) {
-                if (!(value instanceof Date) || isNaN(value.getTime())) return null;
-                const utc = Date.UTC(value.getFullYear(), value.getMonth(), value.getDate());
-                const excelEpoch = Date.UTC(1899, 11, 30);
-                return Math.round((utc - excelEpoch) / 86400000);
+                return fmt.excelSerialFromDate(value);
             },
             strictQty(value, fallback = 0) {
-                if (value === null || value === undefined || value === '') return Math.max(0, Math.round(Number(fallback) || 0));
-                if (value instanceof Date) return Math.max(0, Math.round(Number(fallback) || 0));
-                if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, Math.round(value)) : Math.max(0, Math.round(Number(fallback) || 0));
-                const raw = String(value).trim();
-                // String tanggal pada field Qty dianggap data tidak valid, bukan jumlah.
-                // Jangan pernah mengubah tanggal menjadi timestamp/serial besar di stok.
-                if (/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(raw) || /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(raw)) {
-                    return Math.max(0, Math.round(Number(fallback) || 0));
-                }
-                const cleaned = raw.replace(/,/g, '').replace(/[^0-9.-]/g, '');
-                const n = Number(cleaned);
-                return Number.isFinite(n) ? Math.max(0, Math.round(n)) : Math.max(0, Math.round(Number(fallback) || 0));
+                return fmt.strictQty(value, fallback);
             },
             strictText(value, fallback = '') {
-                if (value instanceof Date) return String(fallback || '').trim();
-                return String(value ?? fallback ?? '').trim();
+                return fmt.strictText(value, fallback);
             },
             isDateLikeValue(value) {
-                if (value instanceof Date) return true;
-                const raw = String(value ?? '').trim();
-                return /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(raw) || /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(raw);
+                return fmt.isDateLikeValue(value);
             },
             safeQty(primary, ...fallbacks) {
-                const candidates = [primary, ...fallbacks];
-                for (const value of candidates) {
-                    if (this.isDateLikeValue(value)) continue;
-                    if (value === null || value === undefined || value === '') continue;
-                    const n = Number(value);
-                    if (Number.isFinite(n)) return Math.max(0, Math.round(n));
-                }
-                return 0;
+                return fmt.safeQty(primary, ...fallbacks);
             },
             safeNumber(primary, ...fallbacks) {
-                const candidates = [primary, ...fallbacks];
-                for (const value of candidates) {
-                    if (this.isDateLikeValue(value)) continue;
-                    if (value === null || value === undefined || value === '') continue;
-                    const n = Number(value);
-                    if (Number.isFinite(n)) return Math.max(0, n);
-                }
-                return 0;
+                return fmt.safeNumber(primary, ...fallbacks);
             },
             safeText(primary, ...fallbacks) {
-                const candidates = [primary, ...fallbacks];
-                for (const value of candidates) {
-                    if (this.isDateLikeValue(value)) continue;
-                    const text = String(value ?? '').trim();
-                    if (text) return text;
-                }
-                return '';
+                return fmt.safeText(primary, ...fallbacks);
             },
             strictDateOnly(value, fallback = '') {
-                if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString().slice(0,10);
-                // Pada Excel, tanggal tanpa cellDates=true dapat berupa serial number.
-                // Konversi serial hanya di field tanggal; jangan dipakai untuk Qty/Satuan.
-                if (typeof value === 'number' && Number.isFinite(value) && value > 0 && value < 100000) {
-                    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 86400000);
-                    if (!isNaN(d.getTime())) return d.toISOString().slice(0,10);
-                }
-                const raw = String(value ?? '').trim();
-                if (!raw) return fallback || this.getISODateOnly();
-                const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-                if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-                const dmy = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-                if (dmy) return `${dmy[3]}-${String(dmy[2]).padStart(2,'0')}-${String(dmy[1]).padStart(2,'0')}`;
-                return fallback || this.getISODateOnly();
+                return fmt.strictDateOnly(value, fallback);
             },
             normalizeInventoryDataTypes() {
                 // REPAIR-ONLY: jangan mengubah nilai yang sudah valid.
