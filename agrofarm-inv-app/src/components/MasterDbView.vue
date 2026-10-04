@@ -124,7 +124,7 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-100">
-                            <tr v-for="(item, idx) in paginatedMasterCatalog" :key="item.kode" v-memo="[item.kode, item.nama, item.currentStock, item.minStock, item.satuan, item.harga, item.tanggal, item.lokasi]" class="hover:bg-slate-50">
+                            <tr v-for="(item, idx) in paginatedMasterCatalog" :key="item.kode" class="hover:bg-slate-50">
                                 <td class="p-3.5 text-center">
                                     <input
                                         type="checkbox"

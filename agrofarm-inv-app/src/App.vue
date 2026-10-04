@@ -796,16 +796,15 @@
                     const raw = String(op.tgl || '').trim();
                     let month = '';
                     let year = '';
-                    if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
-                        const parts = raw.split('/');
-                        month = parts[1];
-                        year = parts[2];
-                    } else if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-                        const parts = raw.split('-');
-                        year = parts[0];
-                        month = parts[1];
-                    } else if (op.isoDate) {
-                        const d = new Date(op.isoDate);
+                    let m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                    if (m) {
+                        month = m[2].padStart(2, '0');
+                        year = m[3];
+                    } else if ((m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) {
+                        year = m[1];
+                        month = m[2].padStart(2, '0');
+                    } else {
+                        const d = new Date(op.isoDate || raw);
                         if (!isNaN(d.getTime())) {
                             month = String(d.getMonth() + 1).padStart(2, '0');
                             year = String(d.getFullYear());
@@ -1407,16 +1406,20 @@
             },
             opnameHistoryYears() {
                 const years = new Set();
-                (this.opnameHistory || []).forEach(op => {
+                const grab = (op) => {
                     const raw = String(op.tgl || '').trim();
-                    if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
-                        years.add(raw.split('/')[2]);
-                    } else if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-                        years.add(raw.split('-')[0]);
-                    } else if (op.isoDate) {
-                        const d = new Date(op.isoDate);
-                        if (!isNaN(d.getTime())) years.add(String(d.getFullYear()));
-                    }
+                    let m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                    if (m) return { month: m[2].padStart(2, '0'), year: m[3] };
+                    m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+                    if (m) return { month: m[2].padStart(2, '0'), year: m[1] };
+                    const src = op.isoDate || raw;
+                    const d = new Date(src);
+                    if (!isNaN(d.getTime())) return { month: String(d.getMonth() + 1).padStart(2, '0'), year: String(d.getFullYear()) };
+                    return { month: '', year: '' };
+                };
+                (this.opnameHistory || []).forEach(op => {
+                    const { year } = grab(op);
+                    if (year) years.add(year);
                 });
                 return Array.from(years).sort((a,b) => Number(b) - Number(a));
             },
@@ -2380,6 +2383,9 @@
                     return alert(approvalAuthError?.message || approvalAuth?.message || 'Approval tidak diizinkan oleh server.');
                 }
                 if (!log || !this.isPendingLog(log)) return;
+                // Sinkronkan state terbaru dari server agar validasi stok di bawah memakai
+                // saldo terkini, bukan snapshot lama (mencegah stok minus saat approval).
+                await this.refreshFromSupabaseRealtime('', true);
                 const client = this.getSupabaseClient();
                 try {
                     // Ambil status terbaru sebelum memproses agar approval ganda dari tab/perangkat lain ditolak.
@@ -4249,6 +4255,12 @@
                 const reserved = this.getPendingOutboundQty(gudang, item, excludeLogId);
                 return Math.max(0, currentStock - reserved);
             },
+            // Cari baris stok untuk validasi pengeluaran: cocok barcode bila ada,
+            // fallback ke nama (mencegah salah cocok saat barcode kosong).
+            findStockForOutbound(list, item) {
+                const normKey = value => String(value || '').trim().toLowerCase();
+                return (list || []).find(s => (item?.barcode && String(s.barcode || '') === String(item.barcode)) || normKey(s.nama) === normKey(item?.nama));
+            },
             async submitSparepartMultiOut() {
                 if (!this.canInputTransaction) return alert('Akun Viewer hanya dapat melihat data.');
                 if (!this.formSparepartMultiOut.penerima || !this.formSparepartMultiOut.penerima.trim()) return alert('Nama Penerima wajib diisi!');
@@ -4259,8 +4271,11 @@
                 if (validNames.length !== this.formSparepartMultiOut.selectedItems.length) return alert('Nama barang wajib diisi pada semua item!');
                 const duplicateBarcodes = validNames.map(item => item.barcode).filter((barcode, index, arr) => barcode && arr.indexOf(barcode) !== index);
                 if (duplicateBarcodes.length > 0) return alert('Barang yang sama tidak boleh dimasukkan lebih dari satu kali.');
+                // Sinkronkan stok terbaru dari server sebelum validasi agar qty keluar
+                // tidak lolos memakai snapshot lama (mencegah stok minus).
+                await this.refreshFromSupabaseRealtime('', true);
                 for (const item of this.formSparepartMultiOut.selectedItems) {
-                    const target = this.spareparts.find(s => s.barcode === item.barcode);
+                    const target = this.findStockForOutbound(this.spareparts, item);
                     if (!target) return alert(`Barang "${item.nama}" tidak ditemukan di stok Spare Part!`);
                     if (!Number.isFinite(Number(item.outQty)) || Number(item.outQty) <= 0) return alert(`Qty keluar ${item.nama} harus lebih dari 0!`);
                     const availableForThisOutbound = this.getAvailableOutboundStock('Sparepart', target);
@@ -4272,7 +4287,7 @@
                 const dateOnlyStr = this.getFormattedDateOnly(selectedDate);
                 const isoNow = selectedDate.toISOString();
                 this.formSparepartMultiOut.selectedItems.forEach(item => {
-                    const target = this.spareparts.find(s => s.barcode === item.barcode);
+                    const target = this.findStockForOutbound(this.spareparts, item);
                     const qtyAwal = this.getLatestWarehouseStock('Sparepart', target.nama, target.barcode);
                     const outQty = Number(item.outQty);
                     const hargaBarang = Number(item.harga != null ? item.harga : this.getMasterHarga(target.nama, target.harga)) || 0;
@@ -4478,8 +4493,11 @@
                 if (validNames.length !== this.formSisaProjectMultiOut.selectedItems.length) return alert('Nama barang wajib diisi pada semua item!');
                 const duplicateBarcodes = validNames.map(item => item.barcode).filter((barcode, index, arr) => barcode && arr.indexOf(barcode) !== index);
                 if (duplicateBarcodes.length > 0) return alert('Barang yang sama tidak boleh dimasukkan lebih dari satu kali.');
+                // Sinkronkan stok terbaru dari server sebelum validasi agar qty keluar
+                // tidak lolos memakai snapshot lama (mencegah stok minus).
+                await this.refreshFromSupabaseRealtime('', true);
                 for (const item of this.formSisaProjectMultiOut.selectedItems) {
-                    const target = this.sisaProjects.find(s => s.barcode === item.barcode);
+                    const target = this.findStockForOutbound(this.sisaProjects, item);
                     if (!target) return alert(`Barang "${item.nama}" tidak ditemukan di stok Sisa Project!`);
                     if (!Number.isFinite(Number(item.outQty)) || Number(item.outQty) <= 0) return alert(`Qty keluar ${item.nama} harus lebih dari 0!`);
                     const availableForThisOutbound = this.getAvailableOutboundStock('Sisa Project', target);
@@ -4491,7 +4509,7 @@
                 const dateOnlyStr = this.getFormattedDateOnly(selectedDate);
                 const isoNow = selectedDate.toISOString();
                 this.formSisaProjectMultiOut.selectedItems.forEach(item => {
-                    const target = this.sisaProjects.find(s => s.barcode === item.barcode);
+                    const target = this.findStockForOutbound(this.sisaProjects, item);
                     const qtyAwal = this.getLatestWarehouseStock('Sisa Project', target.nama, target.barcode);
                     const outQty = Number(item.outQty);
                     const hargaBarang = this.getMasterHarga(target.nama, target.harga);
@@ -4563,28 +4581,35 @@
                 if (!f.tanggal || !f.nama || Number(f.qty) <= 0 || !String(f.penerima || '').trim() || !String(requiredText || '').trim()) {
                     return alert(f.gudang === 'Sisa Project' ? 'Tanggal, nama barang, qty, nama penerima, dan keterangan wajib diisi.' : 'Tanggal, nama barang, qty, nama penerima, dan kepentingan/keterangan wajib diisi.');
                 }
+                // Sinkronkan stok terbaru dari server, lalu pakai ulang baris stok yang masih
+                // hidup (array lokal diganti saat refresh) agar validasi memakai saldo terkini.
+                await this.refreshFromSupabaseRealtime('', true);
+                const freshList = f.gudang === 'Sisa Project' ? this.sisaProjects : this.spareparts;
+                const freshItem = this.findStockForOutbound(freshList, { barcode: item.barcode, nama: item.nama || f.nama });
+                if (!freshItem) return alert('Barang tidak ditemukan pada data terbaru. Silakan refresh lalu coba lagi.');
+                f.satuan = this.getMasterSatuan(f.nama || freshItem.nama, freshItem.satuan || f.satuan || 'Pcs');
                 const outQty = Number(f.qty) || 0;
-                const stok = Number(item.qty) || 0;
-                const availableForThisOutbound = this.getAvailableOutboundStock(f.gudang, item);
+                const stok = Number(freshItem.qty) || 0;
+                const availableForThisOutbound = this.getAvailableOutboundStock(f.gudang, freshItem);
                 if (outQty > availableForThisOutbound) {
                     return alert(`Qty melebihi stok yang masih tersedia. Stok yang dapat dikeluarkan: ${availableForThisOutbound}.`);
                 }
                 const selectedDate = this.getDateFromInput(f.tanggal);
                 const dateOnlyStr = this.getFormattedDateOnly(selectedDate);
-                const hargaBarang = Number(f.harga) || this.getMasterHarga(item.nama, item.harga);
+                const hargaBarang = Number(f.harga) || this.getMasterHarga(freshItem.nama, freshItem.harga);
                 this.logs.unshift({
                     id: Date.now() + Math.random(),
                     createdAt: new Date().toISOString(),
                     isoDate: selectedDate.toISOString(),
                     gudang: f.gudang,
                     type: 'OUT',
-                    nama: item.nama,
+                    nama: freshItem.nama,
                     qty: outQty,
                     qtyAwal: stok,
                     qtyAkhir: stok - outQty,
                     harga: hargaBarang,
                     totalHarga: hargaBarang * outQty,
-                    satuan: String(this.getMasterSatuan(f.nama || item.nama, f.satuan || item.satuan || 'Pcs', item.kode || item.barcode || '') || 'Pcs').trim().toUpperCase(),
+                    satuan: String(this.getMasterSatuan(f.nama || freshItem.nama, f.satuan || freshItem.satuan || 'Pcs', freshItem.kode || freshItem.barcode || '') || 'Pcs').trim().toUpperCase(),
                     tgl: dateOnlyStr,
                     user: (f.pengambil || f.penerima).toUpperCase(),
                     pengambil: (f.pengambil || '').toUpperCase(),
@@ -5892,21 +5917,62 @@
                     }
                 });
             },
-            downloadOpnameTemplate() {
-                const rows = this.opnameDraft.items.map((it, i) => ({
-                    No: i + 1,
-                    Barcode: it.barcode || '',
-                    'Nomor SKU': it.kode || '',
-                    'Rak/Lokasi': it.lokasi || '',
-                    'Nama Barang': it.nama,
-                    Satuan: it.satuan,
-                    'Qty Sistem': it.qtySystem,
-                    'Qty Fisik': '',
-                    Catatan: ''
-                }));
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), `Opname_${this.opnameDraft.gudang}`);
-                XLSX.writeFile(wb, `Template_Opname_${this.opnameDraft.gudang.replace(/\s+/g,'_')}_${this.opnameDraft.tanggal}.xlsx`);
+            async downloadOpnameTemplate() {
+                if (typeof ExcelJS === 'undefined') return alert('Library Excel belum siap. Silakan refresh halaman.');
+                const items = (this.opnameDraft.items || []).map((it, i) => ([
+                    i + 1,
+                    it.barcode || '',
+                    it.kode || '',
+                    it.lokasi || '',
+                    it.nama || '',
+                    it.satuan || 'Pcs',
+                    Number(it.qtySystem) || 0,
+                    '',
+                    ''
+                ]));
+                const wb = new ExcelJS.Workbook(); wb.creator = 'Agrofarm Nusa Raya'; wb.created = new Date();
+                const ws = wb.addWorksheet(`Opname_${this.opnameDraft.gudang}`, { pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: .25, right: .25, top: .35, bottom: .35, header: .1, footer: .1 } } });
+                ws.views = [{ showGridLines: false }];
+                ws.columns = [{ width: 6 }, { width: 18 }, { width: 18 }, { width: 16 }, { width: 36 }, { width: 12 }, { width: 14 }, { width: 14 }, { width: 24 }];
+                const logoId = wb.addImage({ base64: AGROFARM_EXCEL_LOGO_BASE64, extension: 'png' });
+                ws.addImage(logoId, { tl: { col: .15, row: .2 }, ext: { width: 145, height: 36 } });
+                ws.mergeCells('A1:F1'); ws.mergeCells('A2:F2'); ws.mergeCells('A3:F3'); ws.mergeCells('G1:I3');
+                ws.getCell('A1').value = 'TEMPLATE STOCK OPNAME';
+                ws.getCell('A2').value = 'AGROFARM NUSA RAYA — SISTEM INVENTORY SPARE PART';
+                ws.getCell('A3').value = `GUDANG ${this.escapeHtml(String(this.opnameDraft.gudang || '').toUpperCase())}`;
+                ws.getCell('A1').font = { name: 'Arial', size: 16, bold: true };
+                ws.getCell('A2').font = { name: 'Arial', size: 10, bold: true };
+                ws.getCell('A3').font = { name: 'Arial', size: 11, bold: true };
+                ws.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+                ws.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
+                ws.getCell('A3').alignment = { horizontal: 'center', vertical: 'middle' };
+                const dateCell = ws.getCell('G1');
+                dateCell.value = `Tanggal Opname\n${this.opnameDraft.tanggal || this.getFormattedDateOnly()}`;
+                dateCell.font = { name: 'Arial', size: 9, bold: true };
+                dateCell.alignment = { horizontal: 'right', vertical: 'middle', wrapText: true };
+                const headers = ['No', 'Barcode', 'Nomor SKU', 'Rak/Lokasi', 'Nama Barang', 'Satuan', 'Qty Sistem', 'Qty Fisik', 'Catatan'];
+                const border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+                const header = ws.addRow(headers);
+                header.eachCell(c => { c.font = { name: 'Arial', size: 9, bold: true }; c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = border; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }; });
+                items.forEach(row => {
+                    const r = ws.addRow(row);
+                    r.eachCell(c => { c.font = { name: 'Arial', size: 9 }; c.border = border; c.alignment = { vertical: 'middle', wrapText: true }; });
+                    r.getCell(1).alignment = { horizontal: 'center' };
+                });
+                const last = ws.lastRow.number;
+                ws.autoFilter = { from: 'A4', to: `I${last}` };
+                ws.freezePanes = { xSplit: 0, ySplit: 4 };
+                ws.printArea = `A1:I${last}`;
+                const buffer = await wb.xlsx.writeBuffer();
+                const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Template_Opname_${String(this.opnameDraft.gudang || '').replace(/\s+/g, '_')}_${this.opnameDraft.tanggal}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
             },
             importOpnameExcel(event) {
                 const file = event.target.files[0];
@@ -5921,7 +5987,13 @@
                             return;
                         }
                         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: true });
+                        // Template berkop: baris judul dilewati dengan mencari baris header
+                        // yang memuat kolom 'Qty Fisik' (kompatibel juga dengan template lama tanpa kop).
+                        const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
+                        const normCell = (v) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, '');
+                        let headerRowIdx = allRows.findIndex(r => Array.isArray(r) && r.some(c => normCell(c) === 'qtyfisik'));
+                        if (headerRowIdx < 0) headerRowIdx = 0;
+                        const rows = XLSX.utils.sheet_to_json(sheet, { range: headerRowIdx, defval: '', raw: true });
                         if (!rows.length) {
                             alert('File Excel kosong!');
                             return;

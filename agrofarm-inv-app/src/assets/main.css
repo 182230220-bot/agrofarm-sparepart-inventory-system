@@ -30,7 +30,9 @@
                 display: none !important;
             }
             #bast-print-area { display: none !important; }
-            body.printing-label #app > *:not(#label-print-area) {
+            /* #app bersarang (mount point + root template): selektor menarget
+               anak-anak div app bagian dalam agar area cetak tetap terlihat. */
+            body.printing-label #app #app > *:not(#label-print-area) {
                 display: none !important;
             }
             body.printing-label .stock-print-document { display:block !important; font-family:Arial,sans-serif; color:#000; background:#fff; width:100%; }
@@ -188,7 +190,7 @@
                 margin-top: 10px;
                 font-size: 8pt;
             }
-            body.printing-barcode #app > *:not(#label-print-area) {
+            body.printing-barcode #app #app > *:not(#label-print-area) {
                 display: none !important;
             }
             body.printing-barcode #label-print-area {
@@ -248,7 +250,7 @@
             @page {
                 margin: 10mm;
             }
-            body.printing-bast #app > * {
+            body.printing-bast #app #app > *:not(#bast-print-area) {
                 display: none !important;
             }
             body.printing-bast #app {
